@@ -1,0 +1,57 @@
+name: Build and test Docker image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t service-template:ci .
+
+      - name: Run container
+        run: docker run -d -p 8000:8000 --name test-container service-template:ci
+
+      - name: Wait for container to be ready
+        run: |
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:8000/health; then
+              echo "Container is healthy"
+              exit 0
+            fi
+            echo "Waiting for container... ($i)"
+            sleep 2
+          done
+          echo "Container never became healthy"
+          docker logs test-container
+          exit 1
+
+      - name: Check /health response
+        run: |
+          response=$(curl -s http://localhost:8000/health)
+          echo "Response: $response"
+          echo "$response" | grep -q '"status":"ok"' || (echo "Unexpected /health response" && exit 1)
+
+      - name: Check /run response
+        run: |
+          response=$(curl -s -X POST http://localhost:8000/run \
+            -H "Content-Type: application/json" \
+            -d '{"payload": {"test": true}}')
+          echo "Response: $response"
+          echo "$response" | grep -q '"received"' || (echo "Unexpected /run response" && exit 1)
+
+      - name: Show logs on failure
+        if: failure()
+        run: docker logs test-container
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f test-container || true
